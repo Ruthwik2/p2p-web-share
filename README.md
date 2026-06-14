@@ -17,8 +17,8 @@ This was built for **MARS Open Projects 2026**.
 ## Live links
 
 
-- **App (frontend):** `https://<your-app>.vercel.app`
-- **Signaling server (backend):** `https://<your-signaling>.onrender.com`
+- **App (frontend):** `https://p2p-web-share-flax.vercel.app/`
+- **Signaling server (backend):** `https://p2p-web-share-production.up.railway.app/`
 
 ---
 
