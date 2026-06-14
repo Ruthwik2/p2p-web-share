@@ -223,18 +223,24 @@ Both packages ship a `.env.example`. Copy it to `.env` to override defaults.
 
 ## Deployment
 
-The two halves deploy independently.
+The two halves deploy independently. Deploy the **signaling server first** so you
+have its URL when configuring the frontend, then lock down CORS once the frontend
+is live. The current live deployment uses **Railway** (signaling) + **Vercel**
+(frontend).
 
-### Signaling server → Render (or Railway)
+### Signaling server → Railway (or Render)
 
+- **Railway:** set the service **Root Directory** to `server/`. There's no build
+  step; the start command is `npm start` (from `server/Procfile`). Railway injects
+  `PORT` automatically — do **not** set it yourself. Generate a public domain and
+  confirm `/health` returns `{"status":"ok"}`. Leave the optional `TURN_*`
+  variables unset unless you have a TURN relay.
 - **Render:** the included `server/render.yaml` is a ready blueprint — point
   Render at the repo and it builds `server/` with `npm install` and runs
-  `npm start`, health-checking `/health`. Set `CLIENT_ORIGIN` to your frontend's
-  URL.
-- **Railway:** the `server/Procfile` declares the web process; set the root
-  directory to `server/`.
+  `npm start`, health-checking `/health`.
 
-Note the deployed URL (e.g. `https://p2p-web-share-signaling.onrender.com`).
+Note the deployed URL (e.g. `https://p2p-web-share-production.up.railway.app`).
+Set `CLIENT_ORIGIN` to `*` for now; you'll tighten it after the frontend deploys.
 
 ### Frontend → Vercel (or Netlify)
 
@@ -249,8 +255,11 @@ VITE_SIGNALING_URL = https://<your-signaling-server-url>
 - **Netlify:** `client/public/_redirects` does the same. Build command
   `npm run build`, publish directory `dist`.
 
-Finally, set the server's `CLIENT_ORIGIN` to the frontend URL so CORS and the
-Socket.io connection are accepted.
+Finally, go back to the signaling server and change `CLIENT_ORIGIN` from `*` to
+your exact frontend URL (no trailing slash, e.g.
+`https://p2p-web-share-flax.vercel.app`) so CORS and the Socket.io connection are
+restricted to your app. Note `VITE_SIGNALING_URL` is baked in at build time, so
+if you change it later you must trigger a fresh Vercel redeploy.
 
 ---
 
