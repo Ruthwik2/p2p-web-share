@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test/transfer.test.js"
+    "test": "node test/transfer.test.js && node test/resume.test.js"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

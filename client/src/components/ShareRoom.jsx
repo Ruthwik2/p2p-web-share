@@ -23,6 +23,7 @@ const LINE_STATE = {
 };
 
 function badgeState(s) {
+  if (s.connection === 'reconnecting') return 'reconnecting';
   if (s.status === 'transferring') return 'transferring';
   if (s.status === 'verifying') return 'verifying';
   if (s.status === 'done') return 'connected';
@@ -33,6 +34,7 @@ export default function ShareRoom({ file, onReset }) {
   const s = useSender(file);
   const { toasts, push, dismiss } = useToasts();
   const prev = useRef(s.status);
+  const prevConn = useRef(s.connection);
 
   // Surface lifecycle moments as toasts, in the interface's own voice.
   useEffect(() => {
@@ -43,6 +45,17 @@ export default function ShareRoom({ file, onReset }) {
       prev.current = s.status;
     }
   }, [s.status, push]);
+
+  // Connection churn is recoverable — narrate the recovery instead of failing.
+  useEffect(() => {
+    if (prevConn.current !== s.connection) {
+      if (s.connection === 'reconnecting') push('Connection dropped — reconnecting…', 'warn', 4000);
+      if (s.connection === 'connected' && prevConn.current === 'reconnecting') {
+        push('Reconnected. Resuming transfer.', 'info', 2500);
+      }
+      prevConn.current = s.connection;
+    }
+  }, [s.connection, push]);
 
   const active = s.status === 'transferring' || s.status === 'verifying';
   const waiting = s.status === 'creating' || s.status === 'waiting';

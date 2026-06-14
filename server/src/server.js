@@ -16,6 +16,10 @@ const ORIGINS = RAW_ORIGINS === '*' ? '*' : RAW_ORIGINS.split(',').map((s) => s.
 const ROOM_TTL_MS = Number(process.env.ROOM_TTL_MS) || 1000 * 60 * 30;
 const MAX_PEERS = Number(process.env.MAX_PEERS) || 2;
 
+// How long a peer's room slot is held after an involuntary disconnect, so a
+// reconnecting socket can reclaim it and the transfer can auto-resume.
+const RESUME_GRACE_MS = Number(process.env.RESUME_GRACE_MS) || 15000;
+
 const log = {
   info: (...a) => console.log(new Date().toISOString(), '·', ...a),
   warn: (...a) => console.warn(new Date().toISOString(), '·', ...a),
@@ -75,7 +79,7 @@ const io = new SocketServer(server, {
   pingTimeout: 20000,
 });
 
-registerSignaling(io, registry, log);
+registerSignaling(io, registry, log, { resumeGraceMs: RESUME_GRACE_MS });
 
 server.listen(PORT, () => {
   log.info(`signaling server listening on :${PORT}`);

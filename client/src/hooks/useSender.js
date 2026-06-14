@@ -22,16 +22,20 @@ export function useSender(file) {
     status: 'init', // init | creating | waiting | connecting | transferring | verifying | done | error | peer-left | cancelled
     roomId: null,
     link: null,
-    connection: 'idle', // idle | connecting | connected | disconnected | failed
+    connection: 'idle', // idle | connecting | connected | reconnecting | disconnected | failed
     progress: { percent: 0, bytesSent: 0, total: file?.size ?? 0, speed: 0, etaMs: 0 },
     hash: null,
     verified: false,
     encrypted: encryptionAvailable(),
     error: null,
     peerPresent: false,
+    resume: null, // { attempt, max } while a churned link is being recovered
   });
 
-  const refs = useRef({ signaling: null, peer: null, sender: null, key: null, peerId: null });
+  const refs = useRef({
+    signaling: null, peer: null, sender: null, key: null,
+    peerId: null, roomId: null, established: false,
+  });
   const patch = useCallback((p) => setState((s) => ({ ...s, ...p })), []);
 
   // --- actions -------------------------------------------------------------
@@ -61,14 +65,33 @@ export function useSender(file) {
       const signaling = new SignalingClient(SIGNALING_URL);
       r.signaling = signaling;
 
-      signaling.on('error', () =>
-        patch({ status: 'error', error: 'Can’t reach the signaling server. Is it running?' }),
-      );
+      signaling.on('error', () => {
+        // Once the room exists, a connect_error is just a reconnection attempt
+        // failing — Socket.io keeps retrying, and peer-level recovery covers a
+        // true loss. Only an error before we're established is fatal.
+        if (r.established) return;
+        patch({ status: 'error', error: 'Can’t reach the signaling server. Is it running?' });
+      });
 
       signaling.on('connect', async () => {
+        // socket.io reconnects on its own after a network blip with a *new*
+        // socket id. The first connect mints the room; any later one is a
+        // reconnect — reclaim our slot and let the peer ICE-restart rather than
+        // creating a second room.
+        if (r.established) {
+          try {
+            await signaling.rejoinRoom(r.roomId);
+            r.peer?.nudgeResume();
+          } catch {
+            /* grace window lapsed; peer:leave will have already surfaced */
+          }
+          return;
+        }
         try {
           const roomId = await signaling.createRoom();
           if (disposed) return;
+          r.roomId = roomId;
+          r.established = true;
           const link = `${window.location.origin}/r/${roomId}#k=${keyStr}`;
           patch({ status: 'waiting', roomId, link });
         } catch {
@@ -84,12 +107,16 @@ export function useSender(file) {
         const peer = new Peer({ iceServers, initiator: true });
         r.peer = peer;
 
-        // Pipe this side's SDP/ICE out to the specific recipient.
-        peer.on('signal', (data) => signaling.signal(peerId, data));
+        // Pipe this side's SDP/ICE out to the recipient's *current* socket id
+        // (it changes if they reconnect, tracked via peer:reconnect below).
+        peer.on('signal', (data) => signaling.signal(r.peerId, data));
         peer.on('state', ({ connection }) => {
-          if (connection === 'connected') patch({ connection: 'connected' });
-          if (connection === 'failed') patch({ connection: 'failed' });
+          if (connection === 'connected') patch({ connection: 'connected', resume: null });
         });
+        // Churn recovery: a dropped link is renegotiated in place rather than
+        // failed outright. Only a recovery that exhausts its attempts emits 'error'.
+        peer.on('resuming', (info) => patch({ connection: 'reconnecting', resume: info }));
+        peer.on('resumed', () => patch({ connection: 'connected', resume: null }));
         peer.on('error', (err) =>
           patch({ status: 'error', error: err?.message || 'The connection failed.' }),
         );
@@ -144,7 +171,19 @@ export function useSender(file) {
       // Forward inbound SDP/ICE answers into our peer.
       signaling.on('signal', ({ data }) => r.peer?.handleSignal(data));
 
-      // Recipient dropped (closed tab, lost network).
+      // The recipient's socket dropped but may recover within the grace window.
+      signaling.on('peer:disconnected', () => {
+        setState((s) => (s.status === 'done' ? s : { ...s, connection: 'reconnecting' }));
+      });
+
+      // The recipient came back with a new socket id — retarget signaling at it
+      // and drive an ICE restart to rebuild the path.
+      signaling.on('peer:reconnect', ({ peerId }) => {
+        r.peerId = peerId;
+        r.peer?.nudgeResume();
+      });
+
+      // Recipient dropped (closed tab, or grace window lapsed).
       signaling.on('peer:leave', () => {
         setState((s) =>
           s.status === 'done'
@@ -168,7 +207,10 @@ export function useSender(file) {
       } catch {
         /* best-effort teardown */
       }
-      refs.current = { signaling: null, peer: null, sender: null, key: null, peerId: null };
+      refs.current = {
+        signaling: null, peer: null, sender: null, key: null,
+        peerId: null, roomId: null, established: false,
+      };
     };
     // We intentionally key this effect to the file instance only; the engines
     // own all subsequent state.

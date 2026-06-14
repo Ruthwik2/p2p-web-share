@@ -6,6 +6,7 @@ const MAP = {
   connected: { label: 'Connected', color: 'var(--signal)', pulse: false },
   transferring: { label: 'Transferring', color: 'var(--transfer)', pulse: true },
   verifying: { label: 'Verifying', color: 'var(--signal)', pulse: true },
+  reconnecting: { label: 'Reconnecting', color: 'var(--transfer)', pulse: true },
   disconnected: { label: 'Disconnected', color: 'var(--alert)', pulse: false },
   failed: { label: 'Connection failed', color: 'var(--alert)', pulse: false },
 };

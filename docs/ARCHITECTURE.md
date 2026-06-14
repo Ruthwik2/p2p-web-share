@@ -31,13 +31,19 @@ by the test suite over a loopback channel.
 Signaling is the only phase the server participates in. The Socket.io event set
 is small:
 
-| Event (client → server) | Server response / broadcast            | Meaning                                  |
-| ----------------------- | -------------------------------------- | ---------------------------------------- |
-| `room:create`           | ack `{ roomId }`                       | Sender opens a new room.                 |
-| `room:join { roomId }`  | ack `{ ok, peers }` or `{ ok:false, code }` | Receiver joins; host is notified via `peer:join`. |
-| `signal { to, data }`   | relayed as `signal { from, data }`     | Relay one SDP/ICE payload to a roommate. |
-| `room:leave`            | broadcast `peer:leave`                 | Explicit departure.                      |
-| *disconnect*            | broadcast `peer:leave`                 | Socket dropped.                          |
+| Event (client → server)   | Server response / broadcast            | Meaning                                  |
+| ------------------------- | -------------------------------------- | ---------------------------------------- |
+| `room:create { clientId }`| ack `{ roomId }`                       | Sender opens a new room.                 |
+| `room:join { roomId, clientId }` | ack `{ ok, peers }` or `{ ok:false, code }` | Receiver joins; host is notified via `peer:join`. |
+| `room:rejoin { roomId, clientId }` | ack `{ ok, peers }` or `{ ok:false, code }` | Reconnecting peer reclaims its slot; survivors get `peer:reconnect`. |
+| `signal { to, data }`     | relayed as `signal { from, data }`     | Relay one SDP/ICE payload to a roommate. |
+| `room:leave`              | broadcast `peer:leave`                 | Explicit departure (immediate).          |
+| *graceful disconnect*     | broadcast `peer:leave`                 | Tab closed / namespace disconnect — immediate. |
+| *involuntary disconnect*  | broadcast `peer:disconnected`, then `peer:leave` if grace lapses | Network churn — slot held for recovery. |
+
+The `clientId` is a stable per-session id (distinct from the socket id, which
+changes on every reconnect). It's what lets the relay recognise a returning peer
+and hold its slot during the auto-resume grace window (see §7).
 
 Two correctness details matter here:
 
@@ -174,11 +180,46 @@ hash comparison in plaintext mode.
   the registry can't grow without bound.
 - **Capacity.** Rooms are capped at `MAX_PEERS` (default 2). A third joiner is
   rejected with a `ROOM_FULL` code that the UI translates to a friendly message.
-- **Disconnects.** A dropped socket broadcasts `peer:leave`; the UI reflects the
-  lost peer rather than hanging silently.
+- **Disconnects.** A *graceful* departure (closed tab, explicit `room:leave`)
+  broadcasts `peer:leave` immediately; the UI reflects the lost peer rather than
+  hanging silently.
 - **Coded join failures.** `ROOM_NOT_FOUND`, `ROOM_FULL`, and `BAD_ROOM_ID` are
   returned as machine-readable codes and mapped to human-readable copy on the
   client.
+
+### Auto-resume on churn
+
+Networks wobble — a laptop switches from Wi-Fi to cellular, a NAT rebinds, a few
+seconds of packets are lost. Rather than fail the transfer, Relay treats an
+*established* connection that drops as recoverable and rebuilds it in place.
+
+- **ICE restart, not teardown.** `peer.js` watches the connection/ICE state. A
+  `failed` (or a `disconnected` that doesn't self-heal within a short grace
+  window) triggers an **ICE restart**: the initiator produces a fresh offer with
+  `createOffer({ iceRestart: true })` and renegotiates the network path. Because
+  the **SCTP association survives an ICE restart**, the `RTCDataChannel` — and
+  the in-flight transfer riding it — is preserved; the bytes resume where they
+  stopped. The sender's backpressure loop naturally parks at the high-water mark
+  during the outage and drains once the path is back, so no chunks are lost or
+  duplicated (each frame is self-describing via its 4-byte index, and the
+  receiver already ignores out-of-range/duplicate indices).
+- **Fixed roles, still no glare.** Only the initiator emits restart offers. A
+  receiver that notices the drop sends a `resume` signal *asking* the initiator
+  to restart; it never offers itself. Restarts are de-duplicated and retried
+  with bounded backoff (`maxAttempts`), after which the drop is finally fatal.
+- **Surviving a signaling blip.** A full network change also drops the Socket.io
+  socket, which reconnects with a *new* id — and the server would normally evict
+  the peer on disconnect. To keep the ICE restart relayable, an **involuntary**
+  disconnect (`transport close` / `ping timeout`, as opposed to a graceful
+  `client namespace disconnect`) doesn't evict immediately: the registry keeps
+  the peer's slot — keyed by a **stable client id**, not the socket id — for a
+  grace window (`RESUME_GRACE_MS`). The returning socket reclaims the slot with
+  `room:rejoin`, survivors are retargeted at the new id via `peer:reconnect`, and
+  only if the window lapses is `peer:leave` broadcast. Room capacity is measured
+  in durable members, so a peer mid-reconnect can't have its slot stolen.
+
+The whole cycle is reflected in the UI as a **Reconnecting** state and a toast,
+returning to **Connected** on recovery.
 
 ---
 

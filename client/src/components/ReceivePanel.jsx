@@ -19,6 +19,7 @@ const LINE_STATE = {
 };
 
 function badgeState(s) {
+  if (s.connection === 'reconnecting') return 'reconnecting';
   if (s.status === 'receiving') return 'transferring';
   if (s.status === 'verifying') return 'verifying';
   if (s.status === 'done') return 'connected';
@@ -30,6 +31,7 @@ export default function ReceivePanel({ roomId, keyStr }) {
   const s = useReceiver(roomId, keyStr);
   const { toasts, push, dismiss } = useToasts();
   const prev = useRef(s.status);
+  const prevConn = useRef(s.connection);
 
   useEffect(() => {
     if (prev.current !== s.status) {
@@ -39,6 +41,17 @@ export default function ReceivePanel({ roomId, keyStr }) {
       prev.current = s.status;
     }
   }, [s.status, push]);
+
+  // Connection churn is recoverable — narrate the recovery instead of failing.
+  useEffect(() => {
+    if (prevConn.current !== s.connection) {
+      if (s.connection === 'reconnecting') push('Connection dropped — reconnecting…', 'warn', 4000);
+      if (s.connection === 'connected' && prevConn.current === 'reconnecting') {
+        push('Reconnected. Resuming transfer.', 'info', 2500);
+      }
+      prevConn.current = s.connection;
+    }
+  }, [s.connection, push]);
 
   const meta = s.meta;
   const active = s.status === 'receiving' || s.status === 'verifying';

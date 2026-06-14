@@ -30,15 +30,16 @@ const JOIN_MESSAGES = {
 export function useReceiver(roomId, keyStr) {
   const [state, setState] = useState({
     status: 'joining', // joining | connecting | receiving | verifying | done | error | peer-left
-    connection: 'connecting',
+    connection: 'connecting', // connecting | connected | reconnecting | failed | disconnected
     meta: null, // { name, size, mime, encrypted, totalChunks, ... }
     progress: { percent: 0, bytesReceived: 0, total: 0, speed: 0, etaMs: 0 },
     verified: false,
     hash: null,
     error: null,
+    resume: null, // { attempt, max } while a churned link is being recovered
   });
 
-  const refs = useRef({ signaling: null, peer: null, receiver: null, hostId: null });
+  const refs = useRef({ signaling: null, peer: null, receiver: null, hostId: null, joined: false });
   const patch = useCallback((p) => setState((s) => ({ ...s, ...p })), []);
 
   const cancel = useCallback(() => {
@@ -86,9 +87,13 @@ export function useReceiver(roomId, keyStr) {
         if (r.hostId) signaling.signal(r.hostId, data);
       });
       peer.on('state', ({ connection }) => {
-        if (connection === 'connected') patch({ connection: 'connected', status: 'connecting' });
-        if (connection === 'failed') patch({ connection: 'failed' });
+        if (connection === 'connected') patch({ connection: 'connected', status: 'connecting', resume: null });
       });
+      // Churn recovery: a dropped link is renegotiated in place. As the
+      // responder we ask the sender to ICE-restart; only an exhausted recovery
+      // emits 'error'.
+      peer.on('resuming', (info) => patch({ connection: 'reconnecting', resume: info }));
+      peer.on('resumed', () => patch({ connection: 'connected', resume: null }));
       peer.on('error', (err) =>
         patch({ status: 'error', error: err?.message || 'The connection failed.' }),
       );
@@ -126,15 +131,30 @@ export function useReceiver(roomId, keyStr) {
         }),
       );
 
-      signaling.on('error', () =>
-        patch({ status: 'error', error: 'Can’t reach the signaling server. Is it running?' }),
-      );
+      signaling.on('error', () => {
+        // After we've joined, a connect_error is just a reconnection attempt
+        // failing — Socket.io keeps retrying and peer-level recovery covers a
+        // true loss. Only an error before we've joined is fatal.
+        if (r.joined) return;
+        patch({ status: 'error', error: 'Can’t reach the signaling server. Is it running?' });
+      });
 
       // Join the room once connected; remember who the host is for answer routing.
+      // A reconnect (new socket id) reclaims our slot instead of joining afresh.
       signaling.on('connect', async () => {
+        if (r.joined) {
+          try {
+            await signaling.rejoinRoom(roomId);
+            r.peer?.nudgeResume();
+          } catch {
+            /* grace window lapsed; peer:leave will have already surfaced */
+          }
+          return;
+        }
         try {
           const res = await signaling.joinRoom(roomId);
           if (disposed) return;
+          r.joined = true;
           if (!r.hostId) r.hostId = res.peers?.[0] ?? null;
         } catch (err) {
           patch({
@@ -151,7 +171,19 @@ export function useReceiver(roomId, keyStr) {
         r.peer?.handleSignal(data);
       });
 
-      // The sender left.
+      // The sender's socket dropped but may recover within the grace window.
+      signaling.on('peer:disconnected', () => {
+        setState((s) => (s.status === 'done' ? s : { ...s, connection: 'reconnecting' }));
+      });
+
+      // The sender came back with a new socket id — retarget answer routing and
+      // ask it to ICE-restart so the path is rebuilt.
+      signaling.on('peer:reconnect', ({ peerId }) => {
+        r.hostId = peerId;
+        r.peer?.nudgeResume();
+      });
+
+      // The sender left for good (or the grace window lapsed).
       signaling.on('peer:leave', () => {
         setState((s) =>
           s.status === 'done'
@@ -180,7 +212,7 @@ export function useReceiver(roomId, keyStr) {
       } catch {
         /* best-effort teardown */
       }
-      refs.current = { signaling: null, peer: null, receiver: null, hostId: null };
+      refs.current = { signaling: null, peer: null, receiver: null, hostId: null, joined: false };
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, keyStr]);

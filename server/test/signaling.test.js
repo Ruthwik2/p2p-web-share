@@ -12,6 +12,8 @@
 process.env.PORT = process.env.TEST_PORT || '4555';
 process.env.CLIENT_ORIGIN = '*';
 process.env.MAX_PEERS = '2';
+// Short grace window so the auto-resume (churn) assertions run fast.
+process.env.RESUME_GRACE_MS = process.env.RESUME_GRACE_MS || '600';
 
 const BASE = `http://localhost:${process.env.PORT}`;
 
@@ -28,7 +30,7 @@ const check = (label, cond) => {
   else { fail++; console.log('  FAIL', label); }
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const connect = () => io(BASE, { transports: ['websocket'], forceNew: true });
+const connect = (opts = {}) => io(BASE, { transports: ['websocket'], forceNew: true, ...opts });
 const once = (sock, ev) => new Promise((res) => sock.once(ev, res));
 const emitAck = (sock, ev, payload) =>
   new Promise((res) => sock.emit(ev, payload, res));
@@ -99,6 +101,71 @@ async function main() {
   e.emit('signal', { to: d.id, data: { sdp: 'SHOULD_NOT_ARRIVE' } });
   await wait(120);
   check('cross-room signal is blocked', leaked === false);
+
+  // --- Auto-resume on churn: involuntary drop + rejoin reclaims the slot ---
+  // A stable clientId lets a peer that drops its socket reclaim its place within
+  // the grace window, so the survivor sees a reconnect rather than a hard leave.
+  {
+    const host = connect();
+    await once(host, 'connect');
+    // reconnection:false so the dropped socket stays down and we drive the
+    // reconnect explicitly with a fresh socket carrying the same clientId.
+    const guest = connect({ reconnection: false });
+    await once(guest, 'connect');
+
+    const { roomId: room3 } = await emitAck(host, 'room:create', { clientId: 'host-cid' });
+    await emitAck(guest, 'room:join', { roomId: room3, clientId: 'guest-cid' });
+    const guestOldId = guest.id;
+
+    // An involuntary transport close must NOT immediately evict — the survivor
+    // gets peer:disconnected and the slot is held.
+    let leftDuringGrace = false;
+    host.on('peer:leave', () => { leftDuringGrace = true; });
+    const hostGotDrop = once(host, 'peer:disconnected');
+    guest.io.engine.close(); // abrupt transport close == network churn
+    const dropEvt = await hostGotDrop;
+    check('survivor notified peer:disconnected on churn', dropEvt.peerId === guestOldId);
+
+    // The returning peer reclaims its slot; the survivor learns the new id.
+    const guest2 = connect();
+    await once(guest2, 'connect');
+    const hostGotReconnect = once(host, 'peer:reconnect');
+    const rejoinRes = await emitAck(guest2, 'room:rejoin', { roomId: room3, clientId: 'guest-cid' });
+    check('rejoin acks ok with surviving peers', rejoinRes.ok === true && rejoinRes.peers[0] === host.id);
+    const reconnectEvt = await hostGotReconnect;
+    check('survivor told peer:reconnect with new + prev ids',
+      reconnectEvt.peerId === guest2.id && reconnectEvt.prevPeerId === guestOldId);
+    check('no peer:leave fired during the grace window', leftDuringGrace === false);
+
+    // Signaling flows over the reclaimed slot (so an ICE restart can complete).
+    const hostGotSig = once(host, 'signal');
+    guest2.emit('signal', { to: host.id, data: { kind: 'offer', sdp: 'RESUME_SDP' } });
+    const sig = await hostGotSig;
+    check('relay works after rejoin', sig.from === guest2.id && sig.data?.sdp === 'RESUME_SDP');
+
+    host.disconnect();
+    guest2.disconnect();
+    await wait(30);
+  }
+
+  // --- Grace window expiry: an unrecovered drop becomes a real peer:leave ---
+  {
+    const host = connect();
+    await once(host, 'connect');
+    const guest = connect({ reconnection: false });
+    await once(guest, 'connect');
+    const { roomId: room4 } = await emitAck(host, 'room:create', { clientId: 'host-cid-2' });
+    await emitAck(guest, 'room:join', { roomId: room4, clientId: 'guest-cid-2' });
+    const guestOldId = guest.id;
+
+    const hostGotLeave = once(host, 'peer:leave');
+    guest.io.engine.close();
+    const leaveEvt = await hostGotLeave; // arrives only after RESUME_GRACE_MS
+    check('grace expiry yields peer:leave for the lost peer', leaveEvt.peerId === guestOldId);
+
+    host.disconnect();
+    await wait(30);
+  }
 
   // Health endpoint reflects live state
   const health = await fetch(`${BASE}/health`).then((r) => r.json());

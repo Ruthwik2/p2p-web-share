@@ -86,6 +86,20 @@ than silently saved.
   carries its own IV and GCM authentication tag, giving both confidentiality and
   per-chunk tamper detection on top of the whole-file hash.
 
+- **Connection auto-resume on churn** — *fully implemented*. When the network
+  path wobbles (Wi-Fi→cellular, NAT rebinding, packet loss, a brief signaling
+  drop), the link is **recovered with an ICE restart instead of torn down**. The
+  SCTP association — and therefore the data channel and the in-flight transfer —
+  survives the restart, so renegotiating the path resumes the transfer where it
+  left off. The initiator is the sole restart driver (no glare); the receiver
+  requests one. Recovery is retried with bounded backoff before a drop is
+  declared fatal. On the signaling side, an involuntary disconnect holds the
+  peer's room slot for a grace window (`RESUME_GRACE_MS`, default 15s) so a
+  reconnecting socket — which gets a *new* id — can reclaim it via a stable
+  client id; survivors are told the new id with `peer:reconnect`. The UI shows a
+  **Reconnecting** state throughout. A graceful leave (closed tab) still evicts
+  immediately.
+
 > **On the other brownie-point items** — the wire protocol was deliberately
 > designed to make them reachable, and the project is honest about their status:
 >
@@ -99,8 +113,6 @@ than silently saved.
 >   addressed signaling already support more than two participants at the
 >   protocol layer; the room capacity is intentionally set to 2 for the
 >   one-to-one MVP. **Designed-for, not shipped.**
-> - **Connection auto-resume on churn:** indexed chunks make "resume from chunk
->   N" tractable, but reconnection/replay logic is **not** implemented.
 >
 > These are described as extensions rather than claimed as done.
 
