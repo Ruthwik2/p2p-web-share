@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Transmission / instrument — base layer.
+  The page is a dark control surface. Color is reserved for state:
+  teal when a link is live, amber while bytes move, coral on a fault.
+*/
+
+:root {
+  --bg: #0e141b;
+  --surface: #161e27;
+  --surface-2: #1e2832;
+  --line: #2a3744;
+  --ink: #e8eef2;
+  --muted: #8a9ba8;
+  --signal: #5ee6c4;
+  --transfer: #f2b544;
+  --alert: #ff6b6b;
+  --encrypted: #8b7cf6;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background-color: var(--bg);
+    /* A faint grid + radial glow: the texture of an instrument panel, kept low
+       enough that it never competes with content. */
+    background-image:
+      radial-gradient(120% 80% at 50% -10%, rgba(94, 230, 196, 0.06), transparent 60%),
+      linear-gradient(rgba(42, 55, 68, 0.22) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(42, 55, 68, 0.22) 1px, transparent 1px);
+    background-size: 100% 100%, 44px 44px, 44px 44px;
+    background-attachment: fixed;
+    color: var(--ink);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* A single, consistent focus ring across the whole app. */
+  :focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: rgba(94, 230, 196, 0.28);
+    color: var(--ink);
+  }
+
+  /* Tabular figures so counters and stats don't jitter as digits change. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Honor the user's motion preference: freeze the ambient animations and keep
+   only instantaneous state changes. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
