@@ -16,7 +16,6 @@ This was built for **MARS Open Projects 2026**.
 
 ## Live links
 
-> Fill these in after deploying (see [Deployment](#deployment)).
 
 - **App (frontend):** `https://<your-app>.vercel.app`
 - **Signaling server (backend):** `https://<your-signaling>.onrender.com`
