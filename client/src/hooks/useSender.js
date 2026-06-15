@@ -128,8 +128,14 @@ export function useSender(file) {
 
           sender.on('ready', ({ hash }) => patch({ hash }));
           sender.on('phase', (phase) => {
-            if (phase === 'transferring') patch({ status: 'transferring' });
-            if (phase === 'verifying' || phase === 'flushing') patch({ status: 'verifying' });
+            // A late phase event must never drag a finished transfer backwards
+            // (e.g. a post-drain 'verifying' arriving after 'done').
+            setState((s) => {
+              if (['done', 'error', 'cancelled', 'peer-left'].includes(s.status)) return s;
+              if (phase === 'transferring') return { ...s, status: 'transferring' };
+              if (phase === 'verifying' || phase === 'flushing') return { ...s, status: 'verifying' };
+              return s;
+            });
           });
           sender.on('progress', (p) =>
             patch({

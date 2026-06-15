@@ -161,7 +161,7 @@ function StatusLine({ status, error }) {
     waiting: 'Waiting for the recipient to open the link',
     connecting: 'Negotiating a direct connection',
     transferring: 'Streaming directly to the recipient',
-    verifying: 'Verifying integrity',
+    verifying: 'Awaiting integrity confirmation',
     done: 'Delivered and verified',
     'peer-left': 'The recipient disconnected',
     cancelled: 'Cancelled',

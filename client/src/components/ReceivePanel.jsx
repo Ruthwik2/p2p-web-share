@@ -18,6 +18,18 @@ const LINE_STATE = {
   error: 'error',
 };
 
+// The top-right corner label tracks the lifecycle so it doesn't read
+// "Receiving" after the file has already arrived.
+const MODE_LABEL = {
+  joining: 'Receiving',
+  connecting: 'Receiving',
+  receiving: 'Receiving',
+  verifying: 'Verifying',
+  done: 'Received',
+  'peer-left': 'Interrupted',
+  error: 'Interrupted',
+};
+
 function badgeState(s) {
   if (s.connection === 'reconnecting') return 'reconnecting';
   if (s.status === 'receiving') return 'transferring';
@@ -65,7 +77,7 @@ export default function ReceivePanel({ roomId, keyStr }) {
       <div className="flex items-center justify-between">
         <ConnectionBadge state={badgeState(s)} />
         <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
-          Receiving
+          {MODE_LABEL[s.status] ?? 'Receiving'}
         </span>
       </div>
 

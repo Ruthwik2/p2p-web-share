@@ -42,6 +42,7 @@ export class FileSender extends Emitter {
     this.totalChunks = 0;
     this.bytesSent = 0;
     this.cancelled = false;
+    this.completed = false; // receiver's COMPLETE ack has landed
     this.meter = new RateMeter();
     this._startedAt = 0;
 
@@ -92,6 +93,10 @@ export class FileSender extends Emitter {
     if (msg.t === MsgType.ACCEPT) {
       await this._stream();
     } else if (msg.t === MsgType.COMPLETE) {
+      // The receiver can finish re-hashing and ack while we're still draining
+      // the send buffer. Latch it so the post-drain 'verifying' phase below
+      // can't clobber the terminal 'done'/'error' state.
+      this.completed = true;
       if (msg.ok) this.emit('done', { verified: true });
       else this.emit('error', new Error('The receiver detected an integrity mismatch.'));
     } else if (msg.t === MsgType.ERROR) {
@@ -135,7 +140,9 @@ export class FileSender extends Emitter {
     // Make sure every queued byte has actually left before we wait on the peer.
     this.emit('phase', 'flushing');
     await this._drainFully();
-    if (this.cancelled) return;
+    // If the receiver already confirmed (or we were cancelled) while draining,
+    // don't re-announce 'verifying' — that would overwrite the final state.
+    if (this.cancelled || this.completed) return;
     this.emit('phase', 'verifying');
   }
 

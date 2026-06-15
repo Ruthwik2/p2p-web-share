@@ -62,6 +62,50 @@ class MockPeer extends Emitter {
   }
 }
 
+/**
+ * Like MockPeer, but its send buffer lingers above zero for a moment after each
+ * binary frame — modelling real SCTP backpressure. This opens the race window
+ * where the receiver finishes and acks (COMPLETE) while the sender is still
+ * inside _drainFully(), which used to let a late 'verifying' phase clobber the
+ * terminal 'done'. Control frames are delivered but don't touch the buffer.
+ */
+class DrainingMockPeer extends Emitter {
+  constructor({ drainMs = 60 } = {}) {
+    super();
+    this.partner = null;
+    this.bufferedAmount = 0;
+    this.maxMessageSize = 64 * 1024;
+    this.drainMs = drainMs;
+    this._timer = null;
+  }
+
+  link(partner) {
+    this.partner = partner;
+  }
+
+  send(data) {
+    if (!isControlMessage(data)) {
+      this.bufferedAmount += data.byteLength ?? data.length ?? 0;
+      if (this._timer) clearTimeout(this._timer);
+      this._timer = setTimeout(() => {
+        this.bufferedAmount = 0;
+        this.emit('bufferedlow');
+      }, this.drainMs);
+    }
+    // Deliver to the partner promptly, regardless of our own buffer accounting.
+    queueMicrotask(() => this.partner.emit('message', data));
+  }
+
+  waitForBufferedLow() {
+    return new Promise((resolve) => {
+      const off = this.on('bufferedlow', () => {
+        off();
+        resolve();
+      });
+    });
+  }
+}
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;
@@ -188,6 +232,33 @@ async function main() {
     const original = await bytesOf(file);
     const out = await runTransfer({ file, encrypt: false, key: null });
     check('single-chunk: bytes match', out.ok && equalBytes(await bytesOf(out.blob), original));
+  }
+
+  // 7. Sender reaches 'done' even when the receiver acks mid-drain (regression:
+  //    a late 'verifying' phase must not clobber the terminal 'done').
+  {
+    const senderPeer = new DrainingMockPeer({ drainMs: 60 });
+    const receiverPeer = new MockPeer();
+    senderPeer.link(receiverPeer);
+    receiverPeer.link(senderPeer);
+
+    const receiver = new FileReceiver({ peer: receiverPeer, key: null });
+    const sender = new FileSender({ peer: senderPeer, file: randomFile('race.bin', 200 * 1024), encrypt: false, key: null });
+
+    const senderEvents = []; // ordered log of phase names + 'done'
+    sender.on('phase', (p) => senderEvents.push(p));
+    let senderDone = false;
+    sender.on('done', () => { senderEvents.push('done'); senderDone = true; });
+
+    await sender.prepare();
+    sender.start();
+    await wait(300);
+
+    check('race: sender reaches done', senderDone === true);
+    const doneAt = senderEvents.indexOf('done');
+    const verifyAfterDone = senderEvents.slice(doneAt + 1).includes('verifying');
+    check('race: no verifying phase fires after done', doneAt !== -1 && !verifyAfterDone);
+    check('race: receiver finished', receiver.finished === true);
   }
 
   await wait(50);
